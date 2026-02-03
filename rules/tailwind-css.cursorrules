@@ -1,0 +1,200 @@
+# Tailwind CSS — 10xRules Cursor Rules
+# Premium rules for professional Tailwind CSS usage
+
+## Core Principles
+
+- Tailwind is utility-first, not utility-only. Extract components when you see the same cluster of utilities repeated 3+ times.
+- Never fight Tailwind. If you're writing custom CSS to override Tailwind, you're doing it wrong.
+- Use the design system. Stick to Tailwind's spacing scale (4, 8, 12, 16, 20, 24...), color palette, and typography scale. Don't use arbitrary values unless truly necessary.
+
+## Class Organization
+
+- Order classes consistently. Follow this grouping:
+  1. Layout (display, position, overflow)
+  2. Sizing (width, height)
+  3. Spacing (margin, padding, gap)
+  4. Typography (font, text, leading, tracking)
+  5. Visual (bg, border, rounded, shadow)
+  6. Interactivity (cursor, select, hover, focus)
+  7. Transitions & animations
+  ```html
+  <!-- Organized -->
+  <div class="flex items-center gap-4 p-6 text-sm font-medium text-gray-900 bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow">
+  
+  <!-- Chaotic — avoid this -->
+  <div class="shadow-md hover:shadow-lg text-sm p-6 flex bg-white font-medium rounded-lg gap-4 items-center transition-shadow text-gray-900">
+  ```
+- Use the `prettier-plugin-tailwindcss` to auto-sort classes. No manual sorting needed.
+
+## Responsive Design
+
+- Mobile-first always. Base styles are mobile; add complexity with breakpoints:
+  ```html
+  <!-- Mobile: stack, Tablet: 2 cols, Desktop: 3 cols -->
+  <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+  ```
+- Use Tailwind breakpoints consistently: `sm` (640), `md` (768), `lg` (1024), `xl` (1280), `2xl` (1536).
+- Never use `@media` queries in custom CSS when Tailwind breakpoint prefixes work.
+- Test every layout at 320px (smallest phone), 768px (tablet), 1024px (laptop), 1440px (desktop).
+- Use `container` with `mx-auto` and responsive padding for page-level layouts.
+
+## Component Patterns
+
+- Use the `cn()` utility function (clsx + tailwind-merge) for dynamic classes:
+  ```typescript
+  import { clsx, type ClassValue } from 'clsx';
+  import { twMerge } from 'tailwind-merge';
+  
+  export function cn(...inputs: ClassValue[]) {
+    return twMerge(clsx(inputs));
+  }
+  
+  // Usage
+  <button className={cn(
+    "px-4 py-2 rounded-lg font-medium transition-colors",
+    variant === "primary" && "bg-blue-600 text-white hover:bg-blue-700",
+    variant === "ghost" && "text-gray-600 hover:bg-gray-100",
+    disabled && "opacity-50 cursor-not-allowed",
+  )}>
+  ```
+- Use `cva` (class-variance-authority) for complex component variants:
+  ```typescript
+  import { cva } from 'class-variance-authority';
+  
+  const button = cva("inline-flex items-center justify-center rounded-lg font-medium transition-colors", {
+    variants: {
+      intent: {
+        primary: "bg-blue-600 text-white hover:bg-blue-700",
+        secondary: "bg-gray-100 text-gray-900 hover:bg-gray-200",
+        danger: "bg-red-600 text-white hover:bg-red-700",
+      },
+      size: {
+        sm: "h-8 px-3 text-sm",
+        md: "h-10 px-4 text-sm",
+        lg: "h-12 px-6 text-base",
+      },
+    },
+    defaultVariants: { intent: "primary", size: "md" },
+  });
+  ```
+
+## Spacing & Layout
+
+- Use `gap` instead of margin between flex/grid children:
+  ```html
+  <!-- GOOD -->
+  <div class="flex gap-4">
+    <div>Item</div>
+    <div>Item</div>
+  </div>
+  
+  <!-- BAD -->
+  <div class="flex">
+    <div class="mr-4">Item</div>
+    <div>Item</div>
+  </div>
+  ```
+- Use consistent spacing: pick from Tailwind's scale (2, 3, 4, 6, 8, 12, 16) and stick to them.
+- Use `space-y-*` only for simple vertical stacks. Prefer `gap` in flex/grid contexts.
+- Use `max-w-*` and `mx-auto` for content width constraints. Common: `max-w-7xl`, `max-w-prose`.
+
+## Color System
+
+- Define your color palette in `tailwind.config` and use semantic names:
+  ```javascript
+  colors: {
+    primary: { DEFAULT: '#3B82F6', hover: '#2563EB', light: '#DBEAFE' },
+    surface: { DEFAULT: '#FFFFFF', secondary: '#F9FAFB', tertiary: '#F3F4F6' },
+    content: { DEFAULT: '#111827', secondary: '#6B7280', tertiary: '#9CA3AF' },
+    border: { DEFAULT: '#E5E7EB', strong: '#D1D5DB' },
+    success: '#10B981',
+    warning: '#F59E0B',
+    error: '#EF4444',
+  }
+  ```
+- Use semantic color names (`primary`, `surface`, `content`) over raw colors (`blue-600`, `gray-50`) in components.
+- Support dark mode from the start. Use `dark:` prefix consistently:
+  ```html
+  <div class="bg-white text-gray-900 dark:bg-gray-900 dark:text-gray-100">
+  ```
+- Never use opacity utilities for transparent colors. Use Tailwind's color opacity syntax: `bg-black/50`.
+
+## Typography
+
+- Use Tailwind's `prose` class for content/markdown rendering. Customize via `@tailwindcss/typography`.
+- Set up a typography scale in config and use it consistently:
+  ```
+  text-xs   → 12px — Captions, badges
+  text-sm   → 14px — Secondary text, form labels
+  text-base → 16px — Body text (default)
+  text-lg   → 18px — Large body, card titles
+  text-xl   → 20px — Section headings
+  text-2xl  → 24px — Page headings
+  text-3xl  → 30px — Hero subheadings
+  text-4xl+ → 36px+ — Hero headlines
+  ```
+- Always pair `font-size` with `line-height` and `font-weight`:
+  ```html
+  <h1 class="text-4xl font-bold leading-tight tracking-tight">
+  ```
+- Use `tracking-tight` for headings, `tracking-normal` for body text.
+
+## Dark Mode
+
+- Use `class` strategy in tailwind.config (not `media`) for user-controlled dark mode.
+- Design dark mode intentionally. Don't just invert colors:
+  - Backgrounds: `bg-gray-950` or `bg-gray-900` (not pure black)
+  - Text: `text-gray-100` (not pure white)
+  - Borders: `border-gray-800` (subtle)
+  - Reduced shadows in dark mode: `shadow-lg dark:shadow-none` or `dark:shadow-gray-900/50`
+- Test dark mode separately. Verify contrast ratios meet WCAG AA.
+
+## Animation & Transitions
+
+- Use `transition-*` utilities with specific properties, not `transition-all`:
+  ```html
+  <!-- GOOD — only animates what changes -->
+  <button class="transition-colors duration-150 hover:bg-blue-700">
+  
+  <!-- BAD — animates everything, may cause layout thrash -->
+  <button class="transition-all duration-150 hover:bg-blue-700">
+  ```
+- Keep durations short: 150ms for micro-interactions, 200-300ms for UI state changes.
+- Use `motion-reduce:` prefix for accessibility:
+  ```html
+  <div class="animate-bounce motion-reduce:animate-none">
+  ```
+- Prefer CSS transitions over JavaScript animations for simple state changes.
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use `@apply` in CSS files. It defeats the purpose of utility-first CSS. Exception: base styles in `@layer base`.
+- Do NOT use arbitrary values `[123px]` when a Tailwind scale value is close enough.
+- Do NOT use `!important` (`!` prefix in Tailwind) unless debugging specificity issues.
+- Do NOT mix Tailwind with hand-written CSS for the same concerns.
+- Do NOT create deeply nested class strings. If a class string exceeds ~10 utilities, extract a component.
+- Do NOT use `style` attributes for things Tailwind handles (colors, spacing, typography).
+- Do NOT use fixed pixel breakpoints with arbitrary values. Use Tailwind's responsive prefixes.
+- Do NOT use `hidden` when you mean `invisible` (or vice versa).
+- Do NOT apply hover/focus states without `transition-*` — the jump feels broken.
+- Do NOT forget focus-visible styles for keyboard navigation:
+  ```html
+  <button class="focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
+  ```
+
+## Performance
+
+- Purge unused styles in production (automatic with Tailwind 3+ if content paths are configured correctly).
+- Ensure `content` in `tailwind.config` covers all files that use Tailwind classes.
+- Don't generate Tailwind classes dynamically with string interpolation:
+  ```typescript
+  // BAD — Tailwind can't detect these at build time
+  const color = `text-${colorName}-500`;
+  
+  // GOOD — use complete class names
+  const colorMap = {
+    red: 'text-red-500',
+    blue: 'text-blue-500',
+  } as const;
+  ```
+- Use `@layer components` for custom component classes to maintain proper specificity.

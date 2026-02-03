@@ -1,0 +1,241 @@
+# Python & FastAPI — 10xRules Cursor Rules
+# Premium rules for production-grade FastAPI applications
+
+## Project Structure
+
+- Use this layout for any non-trivial FastAPI project:
+  ```
+  app/
+  ├── main.py              # FastAPI app factory, middleware, startup/shutdown
+  ├── config.py            # Pydantic Settings for env vars
+  ├── dependencies.py      # Shared Depends() callables
+  ├── database.py          # Engine, session factory, Base
+  ├── models/              # SQLAlchemy/SQLModel ORM models
+  ├── schemas/             # Pydantic request/response schemas
+  ├── routers/             # APIRouter modules by domain
+  ├── services/            # Business logic (no HTTP concerns)
+  ├── repositories/        # Database access layer
+  └── tests/
+  ```
+- Separate concerns strictly: routers handle HTTP, services handle business logic, repositories handle data access.
+- Never put database queries directly in route handlers.
+
+## FastAPI Patterns
+
+- Always use `APIRouter` to organize routes by domain. Never put all routes in `main.py`.
+- Use dependency injection everywhere:
+  ```python
+  async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+      ...
+  
+  @router.get("/me")
+  async def read_me(user: User = Depends(get_current_user)):
+      return user
+  ```
+- Use `Annotated` types for cleaner dependency injection (Python 3.9+):
+  ```python
+  from typing import Annotated
+  CurrentUser = Annotated[User, Depends(get_current_user)]
+  DBSession = Annotated[AsyncSession, Depends(get_session)]
+  
+  @router.get("/me")
+  async def read_me(user: CurrentUser, db: DBSession):
+      ...
+  ```
+- Always define explicit response models. Never return raw ORM objects:
+  ```python
+  @router.get("/users/{user_id}", response_model=UserResponse)
+  ```
+- Use `status_code` parameter on route decorators for non-200 responses:
+  ```python
+  @router.post("/users", status_code=status.HTTP_201_CREATED)
+  ```
+
+## Pydantic Models
+
+- Use Pydantic v2 syntax. Never use Pydantic v1 patterns (class Config, validator decorator).
+- Use `model_validator` and `field_validator` (v2), not `@validator` (v1):
+  ```python
+  from pydantic import BaseModel, field_validator
+  
+  class UserCreate(BaseModel):
+      email: str
+      password: str
+  
+      @field_validator('email')
+      @classmethod
+      def validate_email(cls, v: str) -> str:
+          if '@' not in v:
+              raise ValueError('Invalid email')
+          return v.lower()
+  ```
+- Create separate schemas for Create, Update, and Response:
+  ```python
+  class UserBase(BaseModel):
+      email: str
+      name: str
+  
+  class UserCreate(UserBase):
+      password: str
+  
+  class UserUpdate(BaseModel):
+      email: str | None = None
+      name: str | None = None
+  
+  class UserResponse(UserBase):
+      id: int
+      model_config = ConfigDict(from_attributes=True)
+  ```
+- Use `model_config = ConfigDict(from_attributes=True)` instead of `class Config: orm_mode = True`.
+
+## Async Patterns
+
+- Use `async def` for route handlers that do I/O (database, HTTP calls, file operations).
+- Use `def` (sync) for CPU-bound route handlers — FastAPI runs them in a thread pool automatically.
+- Never use `time.sleep()` in async handlers. Use `asyncio.sleep()`.
+- Use `httpx.AsyncClient` for HTTP calls, never `requests` in async code.
+- Use async context managers for resource lifecycle:
+  ```python
+  @asynccontextmanager
+  async def lifespan(app: FastAPI):
+      # Startup
+      pool = await create_pool()
+      yield {"pool": pool}
+      # Shutdown
+      await pool.close()
+  
+  app = FastAPI(lifespan=lifespan)
+  ```
+- For database sessions, always use async generators with `Depends`:
+  ```python
+  async def get_session() -> AsyncGenerator[AsyncSession, None]:
+      async with async_session_factory() as session:
+          try:
+              yield session
+              await session.commit()
+          except Exception:
+              await session.rollback()
+              raise
+  ```
+
+## Error Handling
+
+- Define custom exception classes for business logic errors:
+  ```python
+  class AppException(Exception):
+      def __init__(self, status_code: int, detail: str, error_code: str):
+          self.status_code = status_code
+          self.detail = detail
+          self.error_code = error_code
+  
+  @app.exception_handler(AppException)
+  async def app_exception_handler(request: Request, exc: AppException):
+      return JSONResponse(
+          status_code=exc.status_code,
+          content={"error": exc.error_code, "detail": exc.detail},
+      )
+  ```
+- Never use bare `except:` or `except Exception:` without logging.
+- Always log exceptions with structured logging (structlog or loguru), not `print()`.
+- Return consistent error response shapes across the entire API.
+- Use `HTTPException` only in routers, never in services or repositories.
+
+## Database (SQLAlchemy/SQLModel)
+
+- Use SQLAlchemy 2.0 style with `select()` statements, not legacy Query API:
+  ```python
+  # GOOD (2.0 style)
+  stmt = select(User).where(User.email == email)
+  result = await session.execute(stmt)
+  user = result.scalar_one_or_none()
+  
+  # BAD (legacy)
+  user = session.query(User).filter_by(email=email).first()
+  ```
+- Use Alembic for all migrations. Never use `Base.metadata.create_all()` in production.
+- Always use `server_default` for database defaults, not `default` (which is Python-side only).
+- Use `Mapped` type annotations for SQLAlchemy 2.0:
+  ```python
+  class User(Base):
+      __tablename__ = "users"
+      id: Mapped[int] = mapped_column(primary_key=True)
+      email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+      created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+  ```
+
+## Security
+
+- Never store plaintext passwords. Use `passlib` with bcrypt or `argon2-cffi`.
+- Use `python-jose` or `PyJWT` for JWT tokens. Always set expiration.
+- Validate all input through Pydantic models — never access `request.body` directly.
+- Use `Depends(get_current_user)` as a security gate on every protected route.
+- Set CORS middleware with explicit origins, never `allow_origins=["*"]` in production.
+- Use `secrets.token_urlsafe()` for generating tokens, never `random`.
+
+## Configuration
+
+- Use Pydantic Settings for all configuration:
+  ```python
+  from pydantic_settings import BaseSettings
+  
+  class Settings(BaseSettings):
+      database_url: str
+      redis_url: str = "redis://localhost:6379"
+      jwt_secret: str
+      debug: bool = False
+  
+      model_config = SettingsConfigDict(env_file=".env")
+  
+  settings = Settings()
+  ```
+- Never hardcode secrets, URLs, or configuration values.
+- Use `.env` files for local development only. Use proper secret management in production.
+
+## Testing
+
+- Use `pytest` with `pytest-asyncio` for async tests.
+- Use `httpx.AsyncClient` with `ASGITransport` for testing FastAPI apps:
+  ```python
+  @pytest.fixture
+  async def client(app: FastAPI):
+      async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+          yield ac
+  
+  async def test_create_user(client: AsyncClient):
+      response = await client.post("/users", json={"email": "test@example.com"})
+      assert response.status_code == 201
+  ```
+- Use factory fixtures for test data. Never share mutable test state.
+- Use a separate test database. Use transactions that rollback after each test.
+- Test error cases and edge cases, not just happy paths.
+
+## Type Hints
+
+- Use modern Python type syntax (3.10+): `str | None` instead of `Optional[str]`, `list[str]` instead of `List[str]`.
+- Always type hint function parameters and return values.
+- Use `TypeAlias` for complex types:
+  ```python
+  from typing import TypeAlias
+  UserDict: TypeAlias = dict[str, str | int | None]
+  ```
+- Run `mypy` or `pyright` in strict mode.
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use `from fastapi import FastAPI; app = FastAPI()` at module level for non-trivial apps. Use a factory function.
+- Do NOT use synchronous database drivers (psycopg2) with async FastAPI. Use asyncpg.
+- Do NOT put business logic in route handlers. Extract to service layer.
+- Do NOT return dictionaries from routes. Always use response models.
+- Do NOT use `*` imports. Ever.
+- Do NOT use mutable default arguments.
+- Do NOT use global variables for state. Use dependency injection.
+- Do NOT use `os.getenv()` directly. Use Pydantic Settings.
+- Do NOT skip input validation. Every endpoint needs a Pydantic model.
+
+## Code Style
+
+- Follow PEP 8. Use `ruff` for linting and formatting (replaces black, isort, flake8).
+- Maximum line length: 88 characters (ruff/black default).
+- Use `from __future__ import annotations` for forward references.
+- Docstrings: Google style for public functions and classes.
+- Sort imports: stdlib → third-party → local, with blank lines between groups.

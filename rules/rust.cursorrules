@@ -1,0 +1,264 @@
+# Rust — 10xRules Cursor Rules
+# Premium rules for production-grade Rust applications
+
+## Project Structure
+
+- Use a workspace for multi-crate projects:
+  ```
+  Cargo.toml              # Workspace root
+  crates/
+  ├── api/                # HTTP server binary
+  ├── core/               # Domain types and business logic (no I/O)
+  ├── db/                 # Database access layer
+  └── shared/             # Common utilities, error types
+  ```
+- Keep the `core` crate pure — no async runtime, no I/O, no framework dependencies. This makes it testable and portable.
+- Use `lib.rs` to re-export the public API of each crate. Keep `main.rs` minimal.
+
+## Ownership & Borrowing
+
+- Prefer borrowing over cloning. If you're calling `.clone()` frequently, rethink ownership:
+  ```rust
+  // GOOD — borrow when you only need to read
+  fn process(data: &[u8]) -> Result<Output> { ... }
+  
+  // BAD — unnecessary clone
+  fn process(data: Vec<u8>) -> Result<Output> { ... } // forces caller to give up ownership
+  ```
+- Use `&str` in function parameters, not `String`, unless you need ownership.
+- Use `impl AsRef<str>` or `impl Into<String>` for flexible APIs:
+  ```rust
+  fn greet(name: impl AsRef<str>) {
+      println!("Hello, {}!", name.as_ref());
+  }
+  ```
+- Use `Cow<'_, str>` when a function might or might not need to allocate:
+  ```rust
+  fn normalize(input: &str) -> Cow<'_, str> {
+      if input.contains(' ') {
+          Cow::Owned(input.replace(' ', "_"))
+      } else {
+          Cow::Borrowed(input)
+      }
+  }
+  ```
+- Prefer `&[T]` over `&Vec<T>` in function parameters. Same for `&str` over `&String`.
+
+## Error Handling
+
+- Use `thiserror` for library error types, `anyhow` for application error handling:
+  ```rust
+  // Library code — thiserror
+  #[derive(Debug, thiserror::Error)]
+  pub enum AppError {
+      #[error("user not found: {0}")]
+      NotFound(String),
+      #[error("unauthorized")]
+      Unauthorized,
+      #[error("database error")]
+      Database(#[from] sqlx::Error),
+      #[error("validation failed: {0}")]
+      Validation(String),
+  }
+  
+  // Application code — anyhow for convenience
+  use anyhow::{Context, Result};
+  
+  fn load_config() -> Result<Config> {
+      let content = std::fs::read_to_string("config.toml")
+          .context("failed to read config file")?;
+      toml::from_str(&content)
+          .context("failed to parse config")
+  }
+  ```
+- Always use `?` operator for error propagation. Never use `.unwrap()` in production code.
+- Use `.expect("reason")` only for cases that are genuinely programmer errors (invariant violations).
+- Add context to errors. "file not found" is useless. "failed to read config from /etc/app/config.toml" is useful.
+- Implement `From` conversions or use `#[from]` for error type chains.
+
+## Option & Result Patterns
+
+- Use combinators for clean transformations:
+  ```rust
+  // GOOD — expressive and concise
+  let user = users.iter()
+      .find(|u| u.id == target_id)
+      .ok_or_else(|| AppError::NotFound(target_id.to_string()))?;
+  
+  // Chaining
+  let name = config.get("name")
+      .and_then(|v| v.as_str())
+      .unwrap_or("default");
+  ```
+- Use `if let` for single-pattern matching:
+  ```rust
+  if let Some(user) = cache.get(&id) {
+      return Ok(user.clone());
+  }
+  ```
+- Use `match` when you need to handle multiple variants or when the logic is complex.
+- Never use `.unwrap()` on user input or external data. Always handle the `None`/`Err` case.
+
+## Structs & Enums
+
+- Use the builder pattern for structs with many optional fields:
+  ```rust
+  pub struct ServerConfig {
+      host: String,
+      port: u16,
+      max_connections: usize,
+      timeout: Duration,
+  }
+  
+  impl ServerConfig {
+      pub fn builder() -> ServerConfigBuilder {
+          ServerConfigBuilder::default()
+      }
+  }
+  ```
+- Use `#[derive]` liberally: `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize`.
+- Use `#[non_exhaustive]` on public enums to allow future variants without breaking changes.
+- Use newtype pattern for type safety:
+  ```rust
+  pub struct UserId(String);
+  pub struct Email(String);
+  
+  // Now you can't accidentally pass an Email where a UserId is expected
+  ```
+- Prefer enums over boolean flags:
+  ```rust
+  // GOOD
+  enum Visibility { Public, Private }
+  fn create_repo(name: &str, visibility: Visibility)
+  
+  // BAD
+  fn create_repo(name: &str, is_public: bool)
+  ```
+
+## Async Rust
+
+- Use `tokio` as the async runtime for server applications.
+- Use `async fn` at the top level, avoid `block_on` inside async code.
+- Use structured concurrency with `tokio::select!` and `JoinSet`:
+  ```rust
+  tokio::select! {
+      result = server.run() => {
+          tracing::error!("server exited: {:?}", result);
+      }
+      _ = tokio::signal::ctrl_c() => {
+          tracing::info!("shutting down gracefully");
+      }
+  }
+  ```
+- Use `tokio::spawn` for independent background tasks. Use `JoinSet` to manage groups of tasks.
+- Never use `std::thread::sleep` in async code. Use `tokio::time::sleep`.
+- Use `tokio::sync::Mutex` only when you need to hold the lock across an `.await`. Otherwise use `std::sync::Mutex` (faster).
+
+## Traits
+
+- Keep traits focused. One behavior per trait:
+  ```rust
+  trait Repository {
+      async fn get(&self, id: &str) -> Result<Option<Entity>>;
+      async fn save(&self, entity: &Entity) -> Result<()>;
+      async fn delete(&self, id: &str) -> Result<()>;
+  }
+  ```
+- Use trait objects (`dyn Trait`) when you need runtime polymorphism. Use generics (`impl Trait`) for static dispatch (better performance):
+  ```rust
+  // Static dispatch — preferred for performance
+  fn process(reader: impl Read) -> Result<()> { ... }
+  
+  // Dynamic dispatch — when you need a collection of different types
+  fn handlers() -> Vec<Box<dyn Handler>> { ... }
+  ```
+- Use associated types instead of generic parameters when there's only one logical implementation per type.
+
+## Logging & Observability
+
+- Use `tracing` crate, not `log`. It supports structured logging and spans:
+  ```rust
+  use tracing::{info, error, instrument};
+  
+  #[instrument(skip(db))]
+  async fn get_user(db: &Pool, id: &str) -> Result<User> {
+      info!(user_id = %id, "fetching user");
+      let user = db.get(id).await
+          .map_err(|e| {
+              error!(error = %e, "database query failed");
+              e
+          })?;
+      Ok(user)
+  }
+  ```
+- Use `#[instrument]` on async functions for automatic span creation.
+- Use structured fields, not string interpolation: `info!(count = items.len(), "processed items")`.
+
+## Testing
+
+- Use `#[cfg(test)]` modules in the same file for unit tests:
+  ```rust
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+      
+      #[test]
+      fn test_validate_email() {
+          assert!(validate_email("user@example.com").is_ok());
+          assert!(validate_email("invalid").is_err());
+      }
+      
+      #[tokio::test]
+      async fn test_create_user() {
+          let repo = MockUserRepo::new();
+          let service = UserService::new(repo);
+          let result = service.create("test@example.com").await;
+          assert!(result.is_ok());
+      }
+  }
+  ```
+- Use integration tests in `tests/` directory for cross-crate testing.
+- Use `proptest` or `quickcheck` for property-based testing on core logic.
+- Use `mockall` or hand-written mocks for trait-based dependency injection.
+- Use `assert_matches!` for enum variant testing.
+
+## Dependencies
+
+- Be conservative with dependencies. Audit with `cargo deny` and `cargo audit`.
+- Prefer well-maintained crates with >1000 downloads/day.
+- Essential ecosystem crates:
+  - HTTP: `axum` or `actix-web`
+  - Serialization: `serde` + `serde_json`
+  - Database: `sqlx` (compile-time checked queries)
+  - Async: `tokio`
+  - Error handling: `thiserror` + `anyhow`
+  - Logging: `tracing` + `tracing-subscriber`
+  - CLI: `clap`
+  - Config: `config`
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use `.unwrap()` or `.expect()` on Result/Option from external input.
+- Do NOT use `String` when `&str` suffices in function parameters.
+- Do NOT use `clone()` as a band-aid for ownership issues. Fix the ownership.
+- Do NOT use `unsafe` unless absolutely necessary and well-documented.
+- Do NOT use `Box<dyn Error>` as a return type when a concrete error enum works.
+- Do NOT use `println!` for logging. Use `tracing` macros.
+- Do NOT use `std::sync::Mutex` across `.await` points.
+- Do NOT ignore `#[must_use]` warnings.
+- Do NOT create deeply nested match expressions. Use early returns and `?`.
+- Do NOT use `pub` on everything. Minimize public API surface.
+
+## Performance
+
+- Use `#[inline]` only on small, hot functions. Let the compiler decide for everything else.
+- Use iterators over manual loops — they optimize better:
+  ```rust
+  // GOOD — zero-cost abstraction
+  let sum: i64 = items.iter().filter(|i| i.active).map(|i| i.value).sum();
+  
+  // Avoid manual loops when iterators are clearer
+  ```
+- Pre-allocate with `Vec::with_capacity()` and `String::with_capacity()` when size is known.
+- Use `&str` and slices to avoid allocations in hot paths.
+- Profile with `cargo flamegraph` before optimizing.

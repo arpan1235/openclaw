@@ -1,0 +1,282 @@
+# Go — 10xRules Cursor Rules
+# Premium rules for production-grade Go applications
+
+## Project Structure
+
+- Follow the Standard Go Project Layout for services:
+  ```
+  cmd/
+  ├── api/main.go           # Entry point for API server
+  ├── worker/main.go        # Entry point for background worker
+  internal/
+  ├── config/               # Configuration loading
+  ├── handler/              # HTTP handlers
+  ├── service/              # Business logic
+  ├── repository/           # Data access
+  ├── model/                # Domain types
+  ├── middleware/            # HTTP middleware
+  └── pkg/                  # Internal shared packages
+  pkg/                      # Public packages (if building a library)
+  migrations/               # Database migrations
+  ```
+- Use `internal/` to prevent external packages from importing your implementation details.
+- Keep `main.go` minimal — initialize dependencies, wire them together, start the server.
+- One package per concern. Never create a `utils` package. Find the right home for each function.
+
+## Error Handling
+
+- ALWAYS handle errors. Never use `_` to discard errors:
+  ```go
+  // GOOD
+  f, err := os.Open(filename)
+  if err != nil {
+      return fmt.Errorf("opening config file: %w", err)
+  }
+  defer f.Close()
+  
+  // NEVER
+  f, _ := os.Open(filename)
+  ```
+- Wrap errors with context using `fmt.Errorf("context: %w", err)`. Always add what you were trying to do:
+  ```go
+  user, err := repo.GetUser(ctx, id)
+  if err != nil {
+      return nil, fmt.Errorf("getting user %s: %w", id, err)
+  }
+  ```
+- Define sentinel errors for expected conditions:
+  ```go
+  var (
+      ErrNotFound     = errors.New("not found")
+      ErrUnauthorized = errors.New("unauthorized")
+      ErrConflict     = errors.New("conflict")
+  )
+  
+  // Check with errors.Is
+  if errors.Is(err, ErrNotFound) {
+      http.Error(w, "not found", http.StatusNotFound)
+      return
+  }
+  ```
+- Use custom error types for rich error information:
+  ```go
+  type ValidationError struct {
+      Field   string
+      Message string
+  }
+  
+  func (e *ValidationError) Error() string {
+      return fmt.Sprintf("validation error on %s: %s", e.Field, e.Message)
+  }
+  
+  // Check with errors.As
+  var validErr *ValidationError
+  if errors.As(err, &validErr) {
+      // handle validation error
+  }
+  ```
+- Never use `panic` for expected error conditions. Reserve panic for truly unrecoverable states.
+- Never use `log.Fatal` in library code. Only in `main()`.
+
+## Context
+
+- Pass `context.Context` as the FIRST parameter to every function that does I/O:
+  ```go
+  func (s *UserService) GetUser(ctx context.Context, id string) (*User, error)
+  ```
+- Never store context in structs. Always pass it as a function parameter.
+- Use context for cancellation, deadlines, and request-scoped values (trace IDs).
+- Use `context.WithTimeout` for external calls:
+  ```go
+  ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+  defer cancel()
+  resp, err := client.Do(req.WithContext(ctx))
+  ```
+- Check context cancellation in long-running loops:
+  ```go
+  for _, item := range items {
+      select {
+      case <-ctx.Done():
+          return ctx.Err()
+      default:
+      }
+      process(item)
+  }
+  ```
+
+## Interfaces
+
+- Keep interfaces small. Prefer 1-2 method interfaces:
+  ```go
+  type UserReader interface {
+      GetUser(ctx context.Context, id string) (*User, error)
+  }
+  
+  type UserWriter interface {
+      CreateUser(ctx context.Context, user *User) error
+  }
+  ```
+- Define interfaces where they're used, not where they're implemented.
+- Accept interfaces, return concrete types:
+  ```go
+  // Service accepts an interface
+  func NewUserService(repo UserRepository) *UserService { ... }
+  
+  // Repository returns a concrete type
+  func NewPostgresUserRepo(db *sql.DB) *PostgresUserRepo { ... }
+  ```
+- Use the standard library interfaces: `io.Reader`, `io.Writer`, `fmt.Stringer`, `error`.
+
+## Concurrency
+
+- Never start goroutines without a way to stop them. Use context cancellation or done channels:
+  ```go
+  func worker(ctx context.Context) {
+      for {
+          select {
+          case <-ctx.Done():
+              return
+          case job := <-jobs:
+              process(job)
+          }
+      }
+  }
+  ```
+- Use `errgroup.Group` for parallel operations that can fail:
+  ```go
+  g, ctx := errgroup.WithContext(ctx)
+  g.Go(func() error { return fetchUsers(ctx) })
+  g.Go(func() error { return fetchOrders(ctx) })
+  if err := g.Wait(); err != nil {
+      return err
+  }
+  ```
+- Use `sync.WaitGroup` only when you don't need error propagation.
+- Protect shared mutable state with `sync.Mutex`. Prefer channels for communication between goroutines.
+- Never use `time.Sleep` for synchronization. Use channels, WaitGroups, or context.
+- Close channels from the sender side, never from the receiver.
+
+## HTTP Handlers
+
+- Use `http.HandlerFunc` pattern. Keep handlers thin — delegate to services:
+  ```go
+  func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
+      var input CreateUserRequest
+      if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+          h.respondError(w, http.StatusBadRequest, "invalid JSON")
+          return
+      }
+      
+      if err := input.Validate(); err != nil {
+          h.respondError(w, http.StatusUnprocessableEntity, err.Error())
+          return
+      }
+      
+      user, err := h.userService.Create(r.Context(), &input)
+      if err != nil {
+          h.handleServiceError(w, err)
+          return
+      }
+      
+      h.respondJSON(w, http.StatusCreated, user)
+  }
+  ```
+- Create helper methods for consistent JSON responses:
+  ```go
+  func (h *Handler) respondJSON(w http.ResponseWriter, status int, data any) {
+      w.Header().Set("Content-Type", "application/json")
+      w.WriteHeader(status)
+      json.NewEncoder(w).Encode(data)
+  }
+  ```
+- Use middleware chains for cross-cutting concerns (logging, auth, CORS, recovery).
+- Always set `Content-Type` headers explicitly.
+
+## Testing
+
+- Use table-driven tests:
+  ```go
+  func TestValidateEmail(t *testing.T) {
+      tests := []struct {
+          name    string
+          email   string
+          wantErr bool
+      }{
+          {"valid email", "user@example.com", false},
+          {"missing @", "userexample.com", true},
+          {"empty string", "", true},
+      }
+      
+      for _, tt := range tests {
+          t.Run(tt.name, func(t *testing.T) {
+              err := ValidateEmail(tt.email)
+              if (err != nil) != tt.wantErr {
+                  t.Errorf("ValidateEmail(%q) error = %v, wantErr %v", tt.email, err, tt.wantErr)
+              }
+          })
+      }
+  }
+  ```
+- Use `testify/assert` or `testify/require` for cleaner assertions.
+- Use interfaces for test doubles. No mocking frameworks needed — write simple structs that implement the interface.
+- Use `t.Parallel()` for independent tests.
+- Use `testcontainers-go` for integration tests with real databases.
+- Use `t.Helper()` in test helper functions for better error reporting.
+
+## Configuration
+
+- Load configuration once at startup. Validate everything:
+  ```go
+  type Config struct {
+      Port        int           `env:"PORT" envDefault:"8080"`
+      DatabaseURL string        `env:"DATABASE_URL,required"`
+      JWTSecret   string        `env:"JWT_SECRET,required"`
+      Timeout     time.Duration `env:"TIMEOUT" envDefault:"30s"`
+  }
+  ```
+- Use `caarlos0/env` or `kelseyhightower/envconfig` for environment variable parsing.
+- Never use `os.Getenv()` directly in business logic. Parse at startup, inject via struct.
+
+## Code Style
+
+- Run `gofmt` (or `goimports`) on every save. Non-negotiable.
+- Use `golangci-lint` with a reasonable config. Enable at minimum: `errcheck`, `govet`, `staticcheck`, `unused`.
+- Use meaningful receiver names (not single letters for complex types):
+  ```go
+  func (s *UserService) GetUser(...)  // Good: 's' for service
+  func (this *UserService) GetUser(...)  // Bad: not Go style
+  ```
+- Use `var` for zero-value declarations, `:=` for initialized declarations:
+  ```go
+  var count int           // zero value
+  name := "default"       // initialized
+  ```
+- Group related declarations. Separate imports into stdlib / third-party / local.
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use `init()` functions. Prefer explicit initialization in `main()`.
+- Do NOT use global mutable state. Inject dependencies.
+- Do NOT use `interface{}` or `any` when a concrete type or specific interface works.
+- Do NOT use `panic` for error handling.
+- Do NOT use bare `return` in named return functions (except deferred error handling patterns).
+- Do NOT create `utils`, `helpers`, or `common` packages.
+- Do NOT use `ioutil` (deprecated since Go 1.16). Use `io` and `os` directly.
+- Do NOT ignore the error from `defer f.Close()` on write operations.
+- Do NOT use `sync.Mutex` when a channel would be clearer.
+- Do NOT embed mutexes in exported structs without careful consideration.
+
+## Performance
+
+- Use `sync.Pool` for frequently allocated temporary objects.
+- Pre-allocate slices when you know the capacity: `make([]T, 0, expectedLen)`.
+- Use `strings.Builder` for string concatenation, not `+` in loops.
+- Profile before optimizing. Use `pprof` and benchmarks:
+  ```go
+  func BenchmarkProcess(b *testing.B) {
+      for i := 0; i < b.N; i++ {
+          process(testInput)
+      }
+  }
+  ```
+- Use `json.NewEncoder/NewDecoder` for streaming, `json.Marshal/Unmarshal` for small payloads.

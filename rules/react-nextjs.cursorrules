@@ -1,0 +1,127 @@
+# React & Next.js — 10xRules Cursor Rules
+# Premium rules for production-grade React/Next.js applications
+
+## Architecture & Project Structure
+
+- Use the App Router (Next.js 13+) unless maintaining a legacy Pages Router project.
+- Organize by feature, not by file type: `features/auth/`, `features/dashboard/`, not `components/`, `hooks/`, `utils/`.
+- Co-locate tests, styles, and types with their components.
+- Keep `page.tsx` files thin — they should compose feature components, not contain business logic.
+- Use route groups `(groupName)` to organize layouts without affecting URL structure.
+
+## Component Patterns
+
+- Default to Server Components. Only add `'use client'` when you need interactivity, browser APIs, or React hooks.
+- Never put `'use client'` at the top of a file that doesn't need it — it forces the entire subtree to be client-rendered.
+- Extract client interactivity into small leaf components; keep parent Server Components.
+- Use this component naming pattern:
+  - `ComponentName.tsx` — PascalCase for components
+  - `use-hook-name.ts` — kebab-case for hooks
+  - `component-name.test.tsx` — co-located tests
+- Prefer named exports over default exports for components (better refactoring, better imports).
+- Exception: `page.tsx`, `layout.tsx`, `loading.tsx` etc. must use default exports per Next.js convention.
+
+## State Management
+
+- Start with React's built-in state. Don't reach for Zustand/Redux/Jotai until you actually need shared state across distant components.
+- For server state, use TanStack Query (React Query) or SWR — never roll your own caching.
+- For forms, prefer `react-hook-form` with `zod` validation. Never use uncontrolled forms with manual validation.
+- Lift state up only as far as needed. If only siblings share state, lift to parent — not to a global store.
+- Use `useOptimistic` for optimistic UI updates in Server Actions.
+
+## Data Fetching (Next.js specific)
+
+- Fetch data in Server Components using `async/await` directly — no `useEffect` for initial data loads.
+- Use `fetch()` with Next.js extended options for caching:
+  ```
+  fetch(url, { next: { revalidate: 3600 } })  // ISR: revalidate every hour
+  fetch(url, { cache: 'no-store' })            // SSR: always fresh
+  fetch(url, { cache: 'force-cache' })         // SSG: build-time only
+  ```
+- Use Server Actions for mutations. Define them in separate `actions.ts` files with `'use server'` at the top.
+- Always validate Server Action inputs with zod. Never trust client data.
+- Use `revalidatePath()` or `revalidateTag()` after mutations.
+- Implement loading states with `loading.tsx` and Suspense boundaries.
+- Use `error.tsx` for error boundaries at the route level.
+
+## TypeScript Patterns
+
+- Always define prop types as interfaces, not inline:
+  ```typescript
+  interface UserCardProps {
+    user: User;
+    onSelect: (id: string) => void;
+    variant?: 'compact' | 'full';
+  }
+  ```
+- Never use `any`. Use `unknown` and narrow with type guards.
+- Use `satisfies` operator for type-safe object literals:
+  ```typescript
+  const config = { theme: 'dark', lang: 'en' } satisfies AppConfig;
+  ```
+- Use discriminated unions for component variants, not boolean props:
+  ```typescript
+  // BAD: <Button primary secondary />
+  // GOOD: <Button variant="primary" />
+  type ButtonProps = { variant: 'primary' | 'secondary' | 'ghost' };
+  ```
+
+## Performance
+
+- Use `React.memo()` only when you've measured a performance problem. Don't pre-optimize.
+- Use `useMemo` and `useCallback` only for expensive computations or stable references passed to memoized children.
+- Use `next/image` for all images — never raw `<img>` tags. Always provide `width`, `height`, or `fill`.
+- Use `next/font` for font loading. Never load fonts from external CDNs.
+- Use dynamic imports (`next/dynamic`) for heavy components not needed on initial render.
+- Use `<Suspense>` boundaries to stream heavy content progressively.
+- Add `loading.tsx` to routes with data fetching.
+
+## Error Handling
+
+- Use `error.tsx` at route boundaries. Always include a reset/retry mechanism.
+- In Server Actions, return structured results, not thrown errors:
+  ```typescript
+  type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
+  ```
+- Use `notFound()` from `next/navigation` for 404 cases in data fetching.
+- Always handle the loading, error, and empty states for any data-dependent UI.
+- Use `ErrorBoundary` components for client-side error isolation.
+
+## Styling
+
+- Prefer Tailwind CSS or CSS Modules. Avoid runtime CSS-in-JS (styled-components, Emotion) in Server Components.
+- Use the `cn()` utility (clsx + tailwind-merge) for conditional class names:
+  ```typescript
+  import { cn } from '@/lib/utils';
+  <div className={cn('base-class', isActive && 'active-class')} />
+  ```
+- Never use inline styles for anything other than truly dynamic values (e.g., calculated positions).
+
+## Testing
+
+- Use Vitest + React Testing Library for unit/integration tests.
+- Test behavior, not implementation. Query by role, label, or text — never by test ID unless absolutely necessary.
+- Use Playwright for E2E tests. One E2E test per critical user flow.
+- Mock at the network boundary (MSW), not at the module level.
+- Test Server Actions by calling them directly with test inputs.
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use `useEffect` for data fetching in components that could be Server Components.
+- Do NOT use `useEffect` to sync state — derive it instead.
+- Do NOT use `useEffect` with empty deps as "componentDidMount" — rethink the pattern.
+- Do NOT put API keys or secrets in client components or environment variables without `NEXT_PUBLIC_` prefix awareness.
+- Do NOT use `router.push()` when `<Link>` works — kills prefetching.
+- Do NOT create god components with 200+ lines. Split them.
+- Do NOT use index as key in lists that can reorder.
+- Do NOT fetch data in `layout.tsx` that only one child page needs.
+- Do NOT use `getServerSideProps` or `getStaticProps` in the App Router.
+
+## Accessibility
+
+- All interactive elements must be keyboard accessible.
+- Use semantic HTML: `<button>` for actions, `<a>` for navigation, `<nav>`, `<main>`, `<article>`.
+- Images need descriptive `alt` text. Decorative images get `alt=""`.
+- Form inputs need associated `<label>` elements.
+- Use `aria-live` regions for dynamic content updates.
+- Color contrast must meet WCAG AA (4.5:1 for normal text).

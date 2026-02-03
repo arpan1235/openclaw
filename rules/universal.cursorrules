@@ -1,0 +1,199 @@
+# Universal Best Practices — 10xRules Cursor Rules
+# Premium rules that apply to ALL languages and frameworks
+
+## Code Generation Philosophy
+
+You are generating production code, not tutorial code. Every line should be ready for code review by a senior engineer. Prioritize correctness, readability, and maintainability over cleverness.
+
+## Naming Conventions
+
+- Use descriptive, intention-revealing names. Code is read 10x more than it's written:
+  ```
+  BAD:  d, tmp, val, data, info, ret, res
+  GOOD: elapsedDays, filteredUsers, responseBody, validationResult
+  ```
+- Functions should describe what they DO, not what they ARE:
+  ```
+  BAD:  userData(), processor(), handler()
+  GOOD: fetchActiveUsers(), processPayment(), handleLoginRequest()
+  ```
+- Boolean variables and functions should read as questions:
+  ```
+  BAD:  active, check, status
+  GOOD: isActive, hasPermission, shouldRetry, canDelete
+  ```
+- Constants should scream (UPPER_SNAKE_CASE) only in languages where that's conventional.
+- Avoid abbreviations unless universally understood (URL, HTTP, ID, API).
+- Don't encode types in names (no Hungarian notation): `userList` → `users`, `nameString` → `name`.
+
+## Function Design
+
+- Functions should do ONE thing. If you need "and" to describe what it does, split it.
+- Maximum function length: ~20-30 lines. If longer, extract helpers.
+- Maximum parameters: 3-4. If more, use an options/config object:
+  ```
+  BAD:  createUser(name, email, age, role, department, managerId)
+  GOOD: createUser(options: CreateUserOptions)
+  ```
+- Return early to avoid deep nesting:
+  ```
+  // BAD — deeply nested
+  function process(input) {
+    if (input) {
+      if (input.isValid) {
+        if (input.hasPermission) {
+          // actual logic buried 3 levels deep
+        }
+      }
+    }
+  }
+  
+  // GOOD — guard clauses
+  function process(input) {
+    if (!input) return;
+    if (!input.isValid) throw new ValidationError();
+    if (!input.hasPermission) throw new AuthError();
+    // actual logic at top level
+  }
+  ```
+- Pure functions > functions with side effects. Isolate side effects at the edges.
+- Never use flag parameters (booleans that change behavior). Use separate functions or enums.
+
+## Error Handling
+
+- Errors are not exceptional — they're expected. Design for them:
+  1. Validate inputs at boundaries (API endpoints, form handlers, CLI args)
+  2. Use typed/structured errors, not strings
+  3. Add context when propagating: what were you trying to do?
+  4. Handle errors at the appropriate level — not too early, not too late
+  5. Never silently swallow errors
+- Log errors with context (what, where, why, correlation ID).
+- User-facing error messages should be helpful and actionable, not technical.
+- Distinguish between operational errors (expected: bad input, network failure) and programmer errors (unexpected: null reference, assertion failure).
+
+## Code Organization
+
+- Follow the Dependency Rule: dependencies point inward. Business logic should not depend on frameworks, databases, or HTTP.
+  ```
+  UI/HTTP Layer → Business Logic → Domain Models
+  ↓ (depends on)    ↓ (depends on)    (depends on nothing)
+  ```
+- Group by feature/domain, not by technical layer:
+  ```
+  BAD:  controllers/, models/, services/, views/, utils/
+  GOOD: users/, orders/, payments/, notifications/
+  ```
+- Keep files focused. If a file has more than ~200-300 lines, it's doing too much.
+- Dead code should be deleted, not commented out. That's what version control is for.
+- No `utils` dumping ground. Every function has a proper home.
+
+## Testing
+
+- Write tests that describe behavior, not implementation:
+  ```
+  BAD:  "should call database.save with correct parameters"
+  GOOD: "should persist the user and return their profile"
+  ```
+- Follow the Arrange-Act-Assert (AAA) pattern. One logical assertion per test.
+- Test the public API, not internal implementation details.
+- Use the Testing Trophy: many integration tests, fewer unit tests, fewer E2E tests.
+- Test edge cases: empty input, null/undefined, boundary values, error conditions, concurrent access.
+- Tests are documentation. Name them so a new developer understands the behavior.
+- Test data should be minimal and obvious. Only include fields relevant to the test.
+
+## Security Defaults
+
+- Never trust user input. Validate, sanitize, and escape at every boundary.
+- Never log secrets, tokens, passwords, or PII.
+- Use parameterized queries for ALL database operations. No exceptions.
+- Use HTTPS everywhere. No HTTP in production.
+- Apply the principle of least privilege: minimum permissions, minimum access, minimum scope.
+- Secrets come from environment variables or secret managers, never from code.
+- Set security headers: Content-Security-Policy, X-Frame-Options, X-Content-Type-Options.
+- Hash passwords with bcrypt, argon2, or scrypt. Never MD5, SHA-1, or SHA-256.
+
+## API Design
+
+- Use consistent response shapes:
+  ```json
+  // Success
+  { "data": { ... }, "meta": { "page": 1, "total": 42 } }
+  
+  // Error
+  { "error": { "code": "VALIDATION_ERROR", "message": "Email is required", "details": [...] } }
+  ```
+- Use proper HTTP methods: GET (read), POST (create), PUT (full replace), PATCH (partial update), DELETE (remove).
+- Use proper HTTP status codes. Don't return 200 with an error in the body.
+- Version your API from day one.
+- Use pagination for all list endpoints. Include total count and next/prev links.
+- Use ISO 8601 for dates (`2024-01-15T10:30:00Z`). Use UTC everywhere.
+- Use snake_case for JSON keys (most common convention across languages).
+
+## Git & Version Control
+
+- Write meaningful commit messages:
+  ```
+  BAD:  "fix bug", "update code", "WIP", "changes"
+  GOOD: "fix: prevent duplicate order creation on rapid button clicks"
+  GOOD: "feat: add email notification for order status changes"
+  ```
+- Follow Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
+- Commit early, commit often. Each commit should be a logical unit of work.
+- Never commit secrets, `.env` files, or credentials.
+- Use `.gitignore` from the start. Include IDE files, OS files, build artifacts, and dependencies.
+
+## Documentation
+
+- Code should be self-documenting. If you need a comment to explain WHAT the code does, rewrite the code.
+- Comments should explain WHY, not WHAT:
+  ```
+  BAD:  // increment counter by 1
+  GOOD: // Rate limit: allow max 100 requests per minute per IP
+  ```
+- Document public APIs, configuration options, and architectural decisions.
+- Keep a README with: what it does, how to set it up, how to run it, how to test it.
+- Use TODO comments with context: `// TODO(username): Migrate to new auth provider by Q2 2025`
+
+## Performance Fundamentals
+
+- Measure before optimizing. Use profilers, not intuition.
+- Optimize for the common case, not the edge case.
+- Database queries are almost always the bottleneck. Check them first.
+- Use caching strategically: cache the result, not the computation.
+- Pagination is not optional for list endpoints.
+- Use connection pooling for databases and HTTP clients.
+- Set timeouts on ALL external calls. No timeout = potential hang forever.
+
+## Logging
+
+- Use structured logging (JSON), not string concatenation.
+- Log levels matter:
+  - `ERROR`: Something broke that needs attention
+  - `WARN`: Something unexpected but handled
+  - `INFO`: Business-significant events (user signup, order placed, payment processed)
+  - `DEBUG`: Technical details for debugging (query timing, cache hit/miss)
+- Include correlation/request IDs in all log entries for traceability.
+- Never log sensitive data: passwords, tokens, credit card numbers, SSNs.
+
+## Configuration
+
+- Use environment variables for deployment-specific configuration.
+- Validate ALL configuration at startup. Fail fast with clear error messages.
+- Provide sensible defaults for optional configuration.
+- Document every configuration option.
+- Never hardcode values that might change between environments.
+
+## Anti-Patterns to NEVER Generate
+
+- Magic numbers/strings without named constants.
+- God classes/functions that do everything.
+- Copy-paste code instead of proper abstractions.
+- Premature optimization at the cost of readability.
+- Comments that restate the code.
+- Empty catch blocks / swallowed errors.
+- Hardcoded credentials, URLs, or environment-specific values.
+- Using `sleep()` / `setTimeout()` for synchronization.
+- Circular dependencies between modules.
+- Mutable global state.
+- Over-engineering: don't build abstractions you don't need yet (YAGNI).
+- Under-engineering: don't skip validation, error handling, or types because "it's just a prototype."

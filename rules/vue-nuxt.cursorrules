@@ -1,0 +1,284 @@
+# Vue & Nuxt — 10xRules Cursor Rules
+# Premium rules for production-grade Vue 3 / Nuxt 3 applications
+
+## Project Structure (Nuxt 3)
+
+- Follow Nuxt 3 directory conventions:
+  ```
+  app/
+  ├── components/           # Auto-imported Vue components
+  │   ├── ui/              # Base UI components (Button, Input, Card)
+  │   └── features/        # Feature-specific components
+  ├── composables/          # Auto-imported composables (use*.ts)
+  ├── layouts/              # Page layouts
+  ├── middleware/            # Route middleware
+  ├── pages/                # File-based routing
+  ├── plugins/              # Nuxt plugins
+  ├── server/               # Nitro server routes & middleware
+  │   ├── api/             # API endpoints
+  │   ├── middleware/       # Server middleware
+  │   └── utils/           # Server utilities
+  ├── stores/               # Pinia stores
+  ├── types/                # TypeScript type definitions
+  └── utils/                # Auto-imported utility functions
+  ```
+- Use Nuxt's auto-import system. Don't manually import Vue APIs (`ref`, `computed`, `watch`) or composables.
+- Use `app/` directory structure (Nuxt 3.7+) for cleaner project root.
+
+## Composition API
+
+- ALWAYS use `<script setup>` syntax. Never use Options API in new code:
+  ```vue
+  <script setup lang="ts">
+  // This is the only script pattern to use
+  const props = defineProps<{
+    title: string
+    count?: number
+  }>()
+  
+  const emit = defineEmits<{
+    update: [value: string]
+    close: []
+  }>()
+  
+  const displayTitle = computed(() => `${props.title} (${props.count ?? 0})`)
+  </script>
+  ```
+- Use TypeScript-based `defineProps` and `defineEmits` (no runtime declaration):
+  ```vue
+  <!-- GOOD — type-based -->
+  <script setup lang="ts">
+  defineProps<{ name: string; age?: number }>()
+  
+  <!-- BAD — runtime declaration -->
+  <script setup>
+  defineProps({ name: { type: String, required: true }, age: Number })
+  ```
+- Use `withDefaults` for default prop values:
+  ```vue
+  <script setup lang="ts">
+  const props = withDefaults(defineProps<{
+    variant?: 'primary' | 'secondary'
+    size?: 'sm' | 'md' | 'lg'
+  }>(), {
+    variant: 'primary',
+    size: 'md',
+  })
+  </script>
+  ```
+
+## Composables
+
+- Extract reusable logic into composables. Always prefix with `use`:
+  ```typescript
+  // composables/useDebounce.ts
+  export function useDebounce<T>(value: Ref<T>, delay: number = 300): Ref<T> {
+    const debouncedValue = ref(value.value) as Ref<T>
+    let timeout: ReturnType<typeof setTimeout>
+    
+    watch(value, (newValue) => {
+      clearTimeout(timeout)
+      timeout = setTimeout(() => {
+        debouncedValue.value = newValue
+      }, delay)
+    })
+    
+    return debouncedValue
+  }
+  ```
+- Composables should be pure functions that accept refs/reactive objects and return reactive state.
+- Follow this pattern for async data composables:
+  ```typescript
+  // composables/useUsers.ts
+  export function useUsers() {
+    const users = ref<User[]>([])
+    const isLoading = ref(false)
+    const error = ref<string | null>(null)
+    
+    async function fetchUsers() {
+      isLoading.value = true
+      error.value = null
+      try {
+        users.value = await $fetch('/api/users')
+      } catch (e) {
+        error.value = e instanceof Error ? e.message : 'Failed to fetch users'
+      } finally {
+        isLoading.value = false
+      }
+    }
+    
+    return { users, isLoading, error, fetchUsers }
+  }
+  ```
+
+## State Management (Pinia)
+
+- Use Pinia with Setup Store syntax (not Options syntax):
+  ```typescript
+  // stores/auth.ts
+  export const useAuthStore = defineStore('auth', () => {
+    const user = ref<User | null>(null)
+    const token = ref<string | null>(null)
+    
+    const isAuthenticated = computed(() => !!token.value)
+    const displayName = computed(() => user.value?.name ?? 'Guest')
+    
+    async function login(credentials: LoginCredentials) {
+      const response = await $fetch('/api/auth/login', {
+        method: 'POST',
+        body: credentials,
+      })
+      user.value = response.user
+      token.value = response.token
+    }
+    
+    function logout() {
+      user.value = null
+      token.value = null
+      navigateTo('/login')
+    }
+    
+    return { user, token, isAuthenticated, displayName, login, logout }
+  })
+  ```
+- Keep stores small and focused. One store per domain (auth, cart, notifications).
+- Use `storeToRefs()` when destructuring store state to preserve reactivity:
+  ```vue
+  <script setup lang="ts">
+  const authStore = useAuthStore()
+  const { user, isAuthenticated } = storeToRefs(authStore)
+  const { login, logout } = authStore  // methods don't need storeToRefs
+  </script>
+  ```
+
+## Data Fetching (Nuxt)
+
+- Use `useFetch` for component-level data fetching (auto SSR, caching, dedup):
+  ```vue
+  <script setup lang="ts">
+  const { data: users, status, error, refresh } = await useFetch('/api/users', {
+    transform: (response) => response.data,
+  })
+  </script>
+  ```
+- Use `useAsyncData` when you need custom fetching logic:
+  ```vue
+  <script setup lang="ts">
+  const { data, status } = await useAsyncData('dashboard', () => {
+    return Promise.all([
+      $fetch('/api/stats'),
+      $fetch('/api/recent-activity'),
+    ])
+  })
+  </script>
+  ```
+- Use `$fetch` in event handlers and Pinia stores (not `useFetch` — it's for components only).
+- Use `lazy: true` option for non-critical data that shouldn't block rendering.
+- Use `server: false` for client-only data fetching.
+
+## Server Routes (Nitro)
+
+- Define typed API routes:
+  ```typescript
+  // server/api/users/[id].get.ts
+  export default defineEventHandler(async (event) => {
+    const id = getRouterParam(event, 'id')
+    if (!id) {
+      throw createError({ statusCode: 400, message: 'User ID is required' })
+    }
+    
+    const user = await db.user.findUnique({ where: { id } })
+    if (!user) {
+      throw createError({ statusCode: 404, message: 'User not found' })
+    }
+    
+    return user
+  })
+  ```
+- Use `readValidatedBody` with zod for input validation:
+  ```typescript
+  // server/api/users.post.ts
+  import { z } from 'zod'
+  
+  const createUserSchema = z.object({
+    email: z.string().email(),
+    name: z.string().min(1),
+  })
+  
+  export default defineEventHandler(async (event) => {
+    const body = await readValidatedBody(event, createUserSchema.parse)
+    return await db.user.create({ data: body })
+  })
+  ```
+
+## Component Patterns
+
+- Use `v-model` with `defineModel` (Vue 3.4+):
+  ```vue
+  <!-- Child component -->
+  <script setup lang="ts">
+  const modelValue = defineModel<string>({ required: true })
+  </script>
+  
+  <template>
+    <input :value="modelValue" @input="modelValue = ($event.target as HTMLInputElement).value" />
+  </template>
+  ```
+- Use `provide`/`inject` for deep component tree data (not prop drilling):
+  ```typescript
+  // Parent
+  const theme = ref<'light' | 'dark'>('dark')
+  provide('theme', theme)
+  
+  // Deeply nested child
+  const theme = inject<Ref<'light' | 'dark'>>('theme', ref('light'))
+  ```
+- Use `<Suspense>` with async components for loading states.
+- Use `<Teleport>` for modals, toasts, and overlays.
+
+## Template Best Practices
+
+- Use `v-for` with unique `:key` — never use index as key for dynamic lists.
+- Use `v-show` for frequently toggled visibility, `v-if` for conditional rendering.
+- Never use `v-if` and `v-for` on the same element. Filter in computed property instead.
+- Keep template expressions simple. Move complex logic to computed properties:
+  ```vue
+  <!-- BAD -->
+  <div v-if="user.role === 'admin' && user.verified && !user.suspended">
+  
+  <!-- GOOD -->
+  <div v-if="canAccessAdmin">
+  ```
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use Options API (`data()`, `methods`, `computed`, `mounted`) in new Vue 3 code.
+- Do NOT use `this` — it doesn't exist in `<script setup>`.
+- Do NOT use `ref()` for objects/arrays that need deep reactivity — use `reactive()` or `ref()` with awareness.
+- Do NOT mutate props directly. Emit events to parent.
+- Do NOT use `$refs` for data flow. Use props/events/provide-inject.
+- Do NOT use Vuex. Use Pinia.
+- Do NOT use `useFetch` inside event handlers or Pinia stores.
+- Do NOT create components without TypeScript (`lang="ts"`).
+- Do NOT use `any` type in TypeScript.
+- Do NOT forget to handle loading and error states for async data.
+
+## Testing
+
+- Use Vitest + Vue Test Utils for component testing:
+  ```typescript
+  import { mount } from '@vue/test-utils'
+  import UserCard from './UserCard.vue'
+  
+  describe('UserCard', () => {
+    it('displays user name', () => {
+      const wrapper = mount(UserCard, {
+        props: { user: { name: 'Alice', email: 'alice@test.com' } },
+      })
+      expect(wrapper.text()).toContain('Alice')
+    })
+  })
+  ```
+- Test composables in isolation by wrapping in a test component.
+- Use `@nuxt/test-utils` for Nuxt-specific testing.
+- Mock `$fetch` and `useFetch` in tests, not the actual API.

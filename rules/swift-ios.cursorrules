@@ -1,0 +1,272 @@
+# Swift & iOS — 10xRules Cursor Rules
+# Premium rules for production-grade iOS/macOS applications
+
+## Architecture
+
+- Use MVVM as the default architecture for SwiftUI apps:
+  ```
+  Features/
+  ├── Auth/
+  │   ├── Views/
+  │   │   ├── LoginView.swift
+  │   │   └── SignUpView.swift
+  │   ├── ViewModels/
+  │   │   ├── LoginViewModel.swift
+  │   │   └── SignUpViewModel.swift
+  │   └── Models/
+  │       └── User.swift
+  ├── Home/
+  └── Settings/
+  Services/           # Network, storage, analytics
+  Shared/             # Reusable components, extensions
+  Resources/          # Assets, localization
+  ```
+- Organize by feature, not by layer. Don't create flat `Views/`, `ViewModels/`, `Models/` folders.
+- Keep Views thin. No business logic, no networking, no data transformation in Views.
+- ViewModels should be `@Observable` (iOS 17+) or `ObservableObject` (iOS 16 and below):
+  ```swift
+  // iOS 17+ (preferred)
+  @Observable
+  final class HomeViewModel {
+      var items: [Item] = []
+      var isLoading = false
+      var error: AppError?
+      
+      private let itemService: ItemServiceProtocol
+      
+      init(itemService: ItemServiceProtocol = ItemService()) {
+          self.itemService = itemService
+      }
+      
+      func loadItems() async {
+          isLoading = true
+          defer { isLoading = false }
+          do {
+              items = try await itemService.fetchItems()
+          } catch {
+              self.error = .from(error)
+          }
+      }
+  }
+  ```
+
+## SwiftUI Patterns
+
+- Use `@State` for view-local state, `@Observable`/`@ObservedObject` for ViewModel state, `@Environment` for dependency injection.
+- Never use `@StateObject` with iOS 17+ Observation framework. Use `@State` with `@Observable` classes.
+- Extract reusable view components. If a `body` exceeds ~40 lines, extract subviews:
+  ```swift
+  struct UserListView: View {
+      let users: [User]
+      
+      var body: some View {
+          List(users) { user in
+              UserRow(user: user)
+          }
+      }
+  }
+  
+  private struct UserRow: View {
+      let user: User
+      
+      var body: some View {
+          HStack {
+              AsyncImage(url: user.avatarURL) { image in
+                  image.resizable().frame(width: 40, height: 40).clipShape(Circle())
+              } placeholder: {
+                  Circle().fill(.gray.opacity(0.3)).frame(width: 40, height: 40)
+              }
+              VStack(alignment: .leading) {
+                  Text(user.name).font(.headline)
+                  Text(user.email).font(.subheadline).foregroundStyle(.secondary)
+              }
+          }
+      }
+  }
+  ```
+- Use `ViewModifier` for reusable styling:
+  ```swift
+  struct CardModifier: ViewModifier {
+      func body(content: Content) -> some View {
+          content
+              .padding()
+              .background(.background)
+              .clipShape(RoundedRectangle(cornerRadius: 12))
+              .shadow(color: .black.opacity(0.05), radius: 8, y: 4)
+      }
+  }
+  
+  extension View {
+      func cardStyle() -> some View {
+          modifier(CardModifier())
+      }
+  }
+  ```
+- Handle all view states: loading, loaded (with data), empty, and error:
+  ```swift
+  var body: some View {
+      Group {
+          if viewModel.isLoading {
+              ProgressView()
+          } else if let error = viewModel.error {
+              ErrorView(error: error, retry: { Task { await viewModel.loadItems() } })
+          } else if viewModel.items.isEmpty {
+              ContentUnavailableView("No Items", systemImage: "tray")
+          } else {
+              ItemListView(items: viewModel.items)
+          }
+      }
+      .task { await viewModel.loadItems() }
+  }
+  ```
+
+## Async/Await & Concurrency
+
+- Use Swift Concurrency (`async/await`) everywhere. Never use completion handlers in new code.
+- Use `Task` for launching async work from synchronous contexts:
+  ```swift
+  Button("Refresh") {
+      Task { await viewModel.refresh() }
+  }
+  ```
+- Use `.task` modifier for view lifecycle async work (auto-cancels when view disappears).
+- Use `@Sendable` and `sending` annotations for concurrency safety.
+- Mark ViewModels as `@MainActor` to ensure UI updates happen on the main thread:
+  ```swift
+  @MainActor
+  @Observable
+  final class HomeViewModel {
+      // All property updates are guaranteed to be on main thread
+  }
+  ```
+- Use `TaskGroup` for parallel operations:
+  ```swift
+  func loadDashboard() async throws -> Dashboard {
+      async let profile = userService.fetchProfile()
+      async let stats = analyticsService.fetchStats()
+      async let notifications = notificationService.fetchRecent()
+      
+      return Dashboard(
+          profile: try await profile,
+          stats: try await stats,
+          notifications: try await notifications
+      )
+  }
+  ```
+
+## Error Handling
+
+- Define a typed error enum for each feature or service:
+  ```swift
+  enum NetworkError: LocalizedError {
+      case unauthorized
+      case notFound
+      case serverError(statusCode: Int)
+      case decodingFailed(Error)
+      case noConnection
+      
+      var errorDescription: String? {
+          switch self {
+          case .unauthorized: "Your session has expired. Please log in again."
+          case .notFound: "The requested resource was not found."
+          case .serverError(let code): "Server error (code: \(code)). Please try again later."
+          case .decodingFailed: "Unable to process the server response."
+          case .noConnection: "No internet connection. Check your network settings."
+          }
+      }
+  }
+  ```
+- Always provide user-friendly error messages via `LocalizedError`.
+- Use `do/catch` at the boundary (ViewModel), not deep in the call stack.
+- Use `Result` type for callbacks. Use `throws` for synchronous operations.
+- Never force-unwrap (`!`) except for IBOutlets and known-safe resources (e.g., `UIImage(named: "logo")!` with asset catalog guarantee).
+
+## Networking
+
+- Use a protocol-based API client for testability:
+  ```swift
+  protocol APIClientProtocol: Sendable {
+      func request<T: Decodable>(_ endpoint: Endpoint) async throws -> T
+  }
+  
+  struct APIClient: APIClientProtocol {
+      private let session: URLSession
+      private let decoder: JSONDecoder
+      
+      func request<T: Decodable>(_ endpoint: Endpoint) async throws -> T {
+          let (data, response) = try await session.data(for: endpoint.urlRequest)
+          guard let httpResponse = response as? HTTPURLResponse else {
+              throw NetworkError.invalidResponse
+          }
+          guard 200..<300 ~= httpResponse.statusCode else {
+              throw NetworkError.from(statusCode: httpResponse.statusCode)
+          }
+          return try decoder.decode(T.self, from: data)
+      }
+  }
+  ```
+- Use `Codable` with custom `CodingKeys` for API models. Keep API models separate from domain models.
+- Configure `JSONDecoder` once: `.keyDecodingStrategy = .convertFromSnakeCase`, `.dateDecodingStrategy` as appropriate.
+
+## Data Persistence
+
+- Use SwiftData (iOS 17+) for local persistence. Fall back to Core Data for older deployment targets.
+- Use `@Model` for SwiftData entities:
+  ```swift
+  @Model
+  final class Item {
+      var title: String
+      var createdAt: Date
+      var isCompleted: Bool
+      
+      init(title: String) {
+          self.title = title
+          self.createdAt = .now
+          self.isCompleted = false
+      }
+  }
+  ```
+- Use `@Query` in Views for reactive data fetching.
+- Use `UserDefaults` only for simple preferences (booleans, small strings). Never for model data.
+- Use Keychain for sensitive data (tokens, passwords). Never `UserDefaults` for secrets.
+
+## Testing
+
+- Test ViewModels thoroughly — they contain all the logic:
+  ```swift
+  @Test func loadItemsSuccess() async {
+      let mockService = MockItemService(items: [.sample])
+      let viewModel = HomeViewModel(itemService: mockService)
+      
+      await viewModel.loadItems()
+      
+      #expect(viewModel.items.count == 1)
+      #expect(!viewModel.isLoading)
+      #expect(viewModel.error == nil)
+  }
+  ```
+- Use Swift Testing framework (`@Test`, `#expect`) for new tests. Use XCTest for UI tests.
+- Use protocol-based dependency injection for testability.
+- Test error states and edge cases, not just happy paths.
+- Use snapshot testing (swift-snapshot-testing) for complex UI components.
+
+## Anti-Patterns to NEVER Generate
+
+- Do NOT use force-unwrapping (`!`) on optionals from external data.
+- Do NOT use `DispatchQueue.main.async` in SwiftUI. Use `@MainActor`.
+- Do NOT use singletons for services. Use dependency injection.
+- Do NOT put networking code in Views.
+- Do NOT use `Timer.scheduledTimer` in SwiftUI. Use `.task` with `AsyncTimerSequence`.
+- Do NOT use massive `body` computed properties. Extract subviews.
+- Do NOT use string-based `UserDefaults` keys. Use an `AppStorage` wrapper or typed keys.
+- Do NOT ignore `@Sendable` warnings. They exist for thread safety.
+- Do NOT use `AnyView` for type erasure. Use `@ViewBuilder` or conditional views.
+- Do NOT use `GeometryReader` when a simpler layout solution exists.
+
+## Performance
+
+- Use `LazyVStack`/`LazyHStack` for long scrollable lists, not `VStack`/`HStack`.
+- Use `@ViewBuilder` instead of `AnyView` to preserve view identity.
+- Profile with Instruments (Time Profiler, Allocations) before optimizing.
+- Use `Equatable` conformance on view data to minimize re-renders.
+- Prefer value types (structs, enums) over reference types (classes) unless you need identity.
